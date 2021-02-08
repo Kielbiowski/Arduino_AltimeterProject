@@ -1,7 +1,8 @@
 /*
 Niniejszy kod prezentuje oprogramowanie wysokościomierza z dnia obrony pracy inżynierskiej.
-Mam pełną świadomość jakości tego kodu, dlatego pracuję nad wersją zrefactorowaną zgodnie z moim obecnym 
-stanem wiedzy oraz umiejętności.
+Mam pełną świadomość jakości tego kodu, dlatego jeśli nadal biorą Państwo pod uwagę moją kandydaturę
+na stanowisko inżyniera oprogramowania, prześlę wersję zrefactorowaną zgodnie z moim obecnym 
+stanem wiedzy oraz umiejętności, tym samym ułatwiając Państwu decyzję.
 Szymon Kiełbiowski
 */
 
@@ -9,6 +10,7 @@ Szymon Kiełbiowski
 #include <SimpleKalmanFilter.h>
 #include <Encoder.h>
 #include <LedControl.h>
+#include <ListLib.h>
 
 #define CLK 2 //Numer Pinu CLK enkodera
 #define DT 4 //Numer Pinu DT enkodera
@@ -187,26 +189,7 @@ void loop()
   switch (mod1)
   {
     case 0:
-    if (mtemperature<0)
-        {
-          lc.setChar(0,0,'-',0);
-          mtemperature=mtemperature*-1;
-        }
-        else lc.setChar(0,0,' ',0);
-        var=mtemperature*100;
-        ones=var%10;
-        var=var/10;
-        tens=var%10;
-        var=var/10;
-        hundreds=var%10;
-        var=var/10;
-        thousends = var;
-        if (thousends==0)lc.setChar(0,1,' ',0);
-        else lc.setDigit(0,1,(byte)thousends,0);
-        lc.setDigit(0,2,(byte)hundreds,1);
-        lc.setDigit(0,3,(byte)tens,0);
-        lc.setRow(0,4,B01001110);//wyswietlenie "C"
-        
+    showCelsius();
       switch (mod2)
         {
         case 0:
@@ -292,26 +275,7 @@ void loop()
         }
     break;
     case 1:
-    if(ftemperature<0)
-        {
-          ftemperature=ftemperature*-1;
-          lc.setChar(0,0,'-',0);
-        }
-        var=ftemperature*10;
-        ones=var%10;
-        var=var/10;
-        tens=var%10;
-        var=var/10;
-        hundreds=var%10;
-        var=var/10;
-        thousends = var;
-        if(thousends==0)lc.setChar(0,0,' ',0);
-        else lc.setDigit(0,0,(byte)thousends,0);
-        if(thousends==0&&hundreds==0) lc.setChar(0,1,' ',0);
-        else lc.setDigit(0,1,(byte)hundreds,0);
-        lc.setDigit(0,2,(byte)tens,1);
-        lc.setDigit(0,3,(byte)ones,0);
-        lc.setChar(0,4,'F',0);//wyswietlenie "F"
+      showFarenheit();
       switch (mod2)
         {
         case 0:
@@ -397,35 +361,7 @@ void loop()
         }
     break;
     case 2:
-    delay(100);
-    ret = Dps310PressureSensor.getContResults(xtemperature, temperatureCount, xpressure, pressureCount);
-        vtimer=millis()-mtimer;
-        vtemperature = xtemperature[0];
-        vpressure = xpressure[0];
-        valtitude=(pow((pressure*100/vpressure),(1/5.257))-1)*(vtemperature+273.15)/0.0065;//obliczenie wysokości nad poziom odniesienia w metrach
-        valtitude=valtitude*3.28084;//Zamiana jednostek z metrow na stopy
-        
-        vario=(valtitude-faltitude)/vtimer*60000;
-        Serial.println(vario);
-        kalmanvario=varioKalman.updateEstimate(vario);
-        if (kalmanvario>0)
-        tone(10,pow(kalmanvario+100,1.2),50);
-        if(kalmanvario<0)
-        {
-          lc.setChar(0,0,'-',0);
-          kalmanvario=kalmanvario*(-1);
-        }
-        else lc.setChar(0,0,' ',0);
-        var=kalmanvario;
-        ones=var%10;
-        var=var/10;
-        tens=var%10;
-        var=var/10;
-        hundreds=var;
-        lc.setDigit(0,1,hundreds,0);
-        lc.setDigit(0,2,tens,0);
-        lc.setDigit(0,3,ones,0);
-        lc.setRow(0,4,B00111110);//wyswietlenie "V"
+    showVario();
       switch (mod2)
         {
           
@@ -513,6 +449,107 @@ void loop()
     break;
   } 
 }
+
+
+void showLeft(float value, char mode){
+  //Range check, display error
+  int toDecimal = digitsToDecimalPoint(value);
+  if (toDecimal>3) showErrorLeft();
+  
+  else{
+    //Sign check, display minus or blank  
+    if(value<0){
+      lc.setChar(0,0,'-',0);
+      value*=-1;
+    } else lc.setChar(0,0,' ',0);
+  
+    int* digits = valueToDigits(value, toDecimal);
+    
+    //Display data
+    for (int i = 1; i<=3; i++){
+      if (i==toDecimal) lc.setDigit(0,i,(byte)digits[i-1],1);
+      else lc.setDigit(0,i,(byte)digits[i-1],0);
+    }
+  }
+  
+  //Display mode
+  switch(mode){
+    case 'C':
+    lc.setRow(0,4,B01001110);//Displaying "C" 
+    break;
+    
+    case 'F':
+    lc.setChar(0,4,'F',0);//Displaying "F"
+    break;
+    
+    case 'V':
+    lc.setRow(0,4,B00111110);//Displaying "V"
+    break;
+  } 
+}
+
+void showErrorLeft(){
+  for (int i=0;i<=3;i++){
+    lc.setChar(0,i,'E',0);
+  }
+}
+
+int digitsToDecimalPoint(float value){
+  int counter = 0;
+  while (value>=1){
+    value/=10;
+    counter++;
+  }
+  return counter;
+}
+
+int* valueToDigits(float floatValue, int toDecimal){
+  //Data prep
+  long int intValue  = floatValue*100;
+  //+2 to size as value is multiplied by 100
+  int sizeOfValue = toDecimal+2;
+  static int digits [10];
+
+  //Conversion to digits
+  for (int i=sizeOfValue-1;i>=0;i--){
+    digits[i]=intValue%10;
+    intValue/=10;
+  }
+  return digits;
+}
+
+void showCelsius(){
+  showLeft(mtemperature,'C');
+}
+
+void showFarenheit(){
+  float farenheitTemp=mtemperature*9/5+32;
+  showLeft(farenheitTemp,'F');
+}
+
+void showVario(){
+  delay(100);
+    uint8_t pressureCount = 20;
+    float xpressure[pressureCount];
+    uint8_t temperatureCount = 20;
+    float xtemperature[temperatureCount];
+    ret = Dps310PressureSensor.getContResults(xtemperature, temperatureCount, xpressure, pressureCount);
+        vtimer=millis()-mtimer;
+        vtemperature = xtemperature[0];
+        vpressure = xpressure[0];
+        valtitude=(pow((pressure*100/vpressure),(1/5.257))-1)*(vtemperature+273.15)/0.0065;//obliczenie wysokości nad poziom odniesienia w metrach
+        valtitude=valtitude*3.28084;//Zamiana jednostek z metrow na stopy
+        
+        vario=(valtitude-faltitude)/vtimer*60000;
+        Serial.println(vario);
+        kalmanvario=varioKalman.updateEstimate(vario);
+        if (kalmanvario>0)
+        tone(10,pow(kalmanvario+100,1.2),50);
+
+        showLeft(kalmanvario,'V');
+}
+
+
 void PUSH()
 {
   timer=0;
