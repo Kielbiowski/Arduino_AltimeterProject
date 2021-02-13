@@ -10,452 +10,189 @@ Szymon Kiełbiowski
 #include <SimpleKalmanFilter.h>
 #include <Encoder.h>
 #include <LedControl.h>
-#include <ListLib.h>
 
 #define CLK 2 //Numer Pinu CLK enkodera
 #define DT 4 //Numer Pinu DT enkodera
-
 Encoder ECR(DT,CLK);//Deklaracja enkodera
 
-int mod1=0;//Deklaracja zmiennej pomocniczej trybu temp/vario
-int mod2=0;//Deklaracja zmiennej pomocniczej trybu altimetera
-byte menu=0;//Deklaracja zmiennej pomocniczej menu
-long encoder=0;//Deklaracja zmiennej pomocniczej obrotu enkodera
-unsigned long timer=0;//Zmienna pomocnicza czasu wcisniecia przycisku
+int mod1=0;
+int mod2=0;
+byte menu=0;
 
-unsigned long int pressure=1013;//Deklaracja zmiennej ciśnienia odniesienia
-float gndpres=101300;//Deklaracja zmiennej ciśnienia odniesienia dla QFE 
+long encoder=0;
+
+int standardPressure=1013;
+float groundPressure=101300;
+
+
+//Configuration of temperature/pressure sensor object
+Dps310 Dps310PressureSensor = Dps310();
+//Declaration of variables regarding temperature/pressure measurements
+float temperature;
+float pressure;
+uint8_t oversampling = 7;
 int16_t ret;
 
-float mtemperature;//Deklaracja zmiennej temperatury pobranej z czujnika
-float mpressure;//Deklaracja zmiennej ciśnienia pobranej z czujnika
-unsigned long int mtimer;//Deklaracja zmiennej czasu podczas pierwszego pomiaru
+unsigned long timestamp = micros();
 
-float haltitude;//Wysokość w trybie H
-float galtitude;//Wysokość w trybie G
-float faltitude;//Wysokość w trybie F
-
-float vtemperature;//Deklaracja zmiennej temperatury na potrzeby wariometru
-float vpressure;//Deklaracja zmiennej ciśnienia na potrzeby wariometru
-float valtitude;//Deklaracja zmiennej wysokości na potrzeby wariometru
-float vario;
-float kalmanvario;
-unsigned long int vtimer;//Deklaracja zmiennej czasu na potrzeby wariometru
-
-long int var;//zmienne na potrzeby wyswietlaczy
-int ones;
-int tens;
-int hundreds;
-int thousends;
-int tenthousends;
-int hundredthousends;
-bool minus;
-
-Dps310 Dps310PressureSensor = Dps310();
-
+//Configuration of Kalman filter object
 SimpleKalmanFilter varioKalman(50,50,0.005);
 
-LedControl lc=LedControl(11,13,8,2); //Deklaracja wyswietlacza LedControl(dataPin, clockPin, csPin, numDevices)
+//Configuration of led display object
+LedControl lc=LedControl(11,13,8,2);
 
 void setup() 
 {
+  //DPS310 config: 0-measure rate, 7-oversampling rate
   Dps310PressureSensor.begin(Wire);
-  ret = Dps310PressureSensor.startMeasureBothCont(0, 7, 0, 7);
-  Serial.begin(9600); // Włączenie komunikacji Serial dla testowania
-  
-  ECR.write(0);//Ustawienie początkowej "pozycji" enkodera
-  attachInterrupt(1, PUSH, LOW);//Deklaracja drugiego pinu interrupt jako przycisku enkodera
+  int16_t ret = Dps310PressureSensor.startMeasureBothCont(0,7,0,7); 
 
-  for(int a=0; a<lc.getDeviceCount(); a++)
-    {
-      lc.shutdown(a,false);//Wybudzenie wyświetlacza a-tego
-      lc.setIntensity(a,10);//Ustawienie jasności wyświetlacza a-tego
-      lc.clearDisplay(a);//"Wyczyszczenie" wyswietlacza a-tego
+  // Serial config for testing purposes
+  Serial.begin(9600); 
+
+  //Encoder config
+  ECR.write(0);
+  attachInterrupt(1, onButtonPress, LOW);
+
+  //Display config
+  for(int a=0; a<lc.getDeviceCount(); a++){
+      lc.shutdown(a,false);
+      lc.setIntensity(a,10);
+      lc.clearDisplay(a);
     }      
 }
 
 void loop() 
 {
-    
-    uint8_t pressureCount = 20;
-    float xpressure[pressureCount];
-    uint8_t temperatureCount = 20;
-    float xtemperature[temperatureCount];
+  //Temperature and pressure measurements, timestamp record
+  uint8_t temperatureCount = 20;
+  float temperatureArray[temperatureCount];
+  uint8_t pressureCount = 20;
+  float pressureArray[pressureCount];
+  ret = Dps310PressureSensor.getContResults(temperatureArray, temperatureCount, pressureArray, pressureCount);
+  temperature = temperatureArray[0];
+  pressure = pressureArray[0];
+  timestamp=micros();
   
-    ret = Dps310PressureSensor.getContResults(xtemperature, temperatureCount, xpressure, pressureCount);
-    mtimer=millis();
-    mtemperature = xtemperature[0];
-    mpressure = xpressure[0];
-      
-  float ftemperature=mtemperature*9/5+32;//obliczenie temperatury w stopniach farenheita
-  galtitude=(pow((gndpres/mpressure),(1/5.257))-1)*(mtemperature+273.15)/0.0065;//obliczenie wysokości nad poziom GND
-  galtitude=galtitude*3.28084;//Zamiana jednostek z metrow na stopy
-  haltitude=(pow((pressure*100/mpressure),(1/5.257))-1)*(mtemperature+273.15)/0.0065;//obliczenie wysokości nad poziom odniesienia w metrach
-  faltitude=haltitude*3.28084;//Zamiana jednostek z metrow na stopy
-  
-  switch (menu)
+  switch (menu)//Menu that enables user to choose what value to change/adjust.
   {
-    case 0://zmiana ciśnienia odniesienia dla trybów H,F
-    if(encoder<ECR.read()/4)
-    {
-      pressure++;
-      //wyświetlenie nowego, zmienionego enkoderem cisnienia
-      var=pressure;
-      ones=var%10;
-      var=var/10;
-      tens=var%10;
-      var=var/10;
-      hundreds=var%10;
-      var=var/10;
-      thousends = var;
-      lc.setChar(1,1,'H',0);
-      lc.setChar(1,2,'P',0);
-      lc.setChar(1,3,'A',0);
-      lc.setDigit(1,0,(byte)ones,0);
-      lc.setDigit(0,7,(byte)tens,0);
-      lc.setDigit(0,6,(byte)hundreds,0);
-      if(thousends==0)lc.setChar(0,5,' ',0);
-      else lc.setDigit(0,5,(byte)thousends,0);
-      delay(500);
-      lc.clearDisplay(0);
-      lc.clearDisplay(1);
-    }
-    if(encoder>ECR.read()/4)
-    {
-      pressure--;
-      //wyświetlenie nowego, zmienionego enkoderem cisnienia
-      var=pressure;
-      ones=var%10;
-      var=var/10;
-      tens=var%10;
-      var=var/10;
-      hundreds=var%10;
-      var=var/10;
-      thousends = var;
-      lc.setChar(1,1,'H',0);
-      lc.setChar(1,2,'P',0);
-      lc.setChar(1,3,'A',0);
-      lc.setDigit(1,0,(byte)ones,0);
-      lc.setDigit(0,7,(byte)tens,0);
-      lc.setDigit(0,6,(byte)hundreds,0);
-      if(thousends==0)lc.setChar(0,5,' ',0);
-      else lc.setDigit(0,5,(byte)thousends,0);
-      delay(500);
-      lc.clearDisplay(0);
-      lc.clearDisplay(1);
-    }
+    case 0://Adjusting base pressure for altimeters
+      if(encoder<ECR.read()/4){
+        standardPressure++;
+        displayPressure(standardPressure);
+      }
+      if(encoder>ECR.read()/4){
+        standardPressure--;
+        displayPressure(standardPressure);
+      }
     break;
     
-    case 1://zmiana trybu wyświetlacza TEMP/VARIO
-    if(encoder<ECR.read()/4)
-    {
-      mod1++;
-      if(mod1>2)
-      {
-      mod1=0;
+    case 1://Changing modes of left display (temp/vario)
+      if(encoder<ECR.read()/4){
+        mod1++;
+        if(mod1>2) mod1=0;
       }
-    }
-    if(encoder>ECR.read()/4)
-    {
-      mod1--;
-      if(mod1<0)
-      {
-       mod1=2;
+      if(encoder>ECR.read()/4){
+        mod1--;
+        if(mod1<0) mod1=2;
       }
-    }
     break;
     
-    case 2://zmiana trybu wyświetlacza ALTIMETER
-    if(encoder<ECR.read()/4)
-    {
-      mod2++;
-      if(mod2>2)
-      {
-        mod2=0;
+    case 2://Changing modes of right display (altimeters)
+      if(encoder<ECR.read()/4){
+        mod2++;
+        if(mod2>2) mod2=0;
       }
-    }
-    if(encoder>ECR.read()/4)
-    {
-      mod2--;
-      if(mod2<0)
-      {
-        mod2=2;
+      if(encoder>ECR.read()/4){
+        mod2--;
+        if(mod2<0) mod2=2;
       }
-    }
     break;
-  }
-  encoder=ECR.read()/4;
-  
-  switch (mod1)
+    }
+    
+    encoder=ECR.read()/4;
+
+  switch (mod1) //Menu of modes controlled via encoder
   {
-    case 0:
-    showCelsius();
-      switch (mod2)
-        {
-        case 0:
-        if(galtitude<0)
-        {
-          lc.setChar(0,5,'-',0);
-          galtitude=galtitude*-1;
-          minus=1;
-        }
-        var=galtitude*100;
-        ones=var%10;
-        var=var/10;
-        tens=var%10;
-        var=var/10;
-        hundreds=var%10;
-        var=var/10;
-        thousends=var%10;
-        var=var/10;
-        tenthousends=var%10;
-        var=var/10;
-        hundredthousends = var;
-        if(hundredthousends==0)lc.setChar(0,5,' ',0);
-        else lc.setDigit(0,5,(byte)hundredthousends,0);
-        if(tenthousends==0&&hundredthousends==0)lc.setChar(0,6,' ',0);
-        else lc.setDigit(0,6,(byte)tenthousends,0);
-        if(thousends==0&&tenthousends==0&&hundredthousends==0)lc.setChar(0,7,' ',0);
-        else lc.setDigit(0,7,(byte)thousends,0);
-        lc.setDigit(1,0,(byte)hundreds,1);
-        lc.setDigit(1,1,(byte)tens,0);
-        lc.setDigit(1,2,(byte)ones,0);
-        lc.setRow(1,3,B01011110);//wyswietlenie "G"
-        break;
-        
-        case 1:
-        var=haltitude*100;
-        ones=var%10;
-        var=var/10;
-        tens=var%10;
-        var=var/10;
-        hundreds=var%10;
-        var=var/10;
-        thousends=var%10;
-        var=var/10;
-        tenthousends=var%10;
-        var=var/10;
-        hundredthousends = var;
-        if(hundredthousends==0)lc.setChar(0,5,' ',0);
-        else lc.setDigit(0,5,(byte)hundredthousends,0);
-        if(hundredthousends==0&&tenthousends==0)lc.setChar(0,6,' ',0);
-        else lc.setDigit(0,6,(byte)tenthousends,0);
-        if(hundredthousends==0&&tenthousends==0&&thousends==0)lc.setChar(0,7,' ',0);
-        else lc.setDigit(0,7,(byte)thousends,0);
-        lc.setDigit(1,0,(byte)hundreds,1);
-        lc.setDigit(1,1,(byte)tens,0);
-        lc.setDigit(1,2,(byte)ones,0);
-        lc.setChar(1,3,'H',0);//wyswietlenie "H"
-        break;
-        
-        case 2:
-        var=faltitude*100;
-        ones=var%10;
-        var=var/10;
-        tens=var%10;
-        var=var/10;
-        hundreds=var%10;
-        var=var/10;
-        thousends=var%10;
-        var=var/10;
-        tenthousends=var%10;
-        var=var/10;
-        hundredthousends = var;
-        if(hundredthousends==0)lc.setChar(0,5,' ',0);
-        else lc.setDigit(0,5,(byte)hundredthousends,0);
-        if(hundredthousends==0&&tenthousends==0)lc.setChar(0,6,' ',0);
-        else lc.setDigit(0,6,(byte)tenthousends,0);
-        if(hundredthousends==0&&tenthousends==0&&thousends==0)lc.setChar(0,7,' ',0);
-        else lc.setDigit(0,7,(byte)thousends,0);
-        lc.setDigit(1,0,(byte)hundreds,1);
-        lc.setDigit(1,1,(byte)tens,0);
-        lc.setDigit(1,2,(byte)ones,0);
-        lc.setChar(1,3,'F',0);//wyswietlenie "F"
-        break;
+    case 0: celsiusTemp();
+    switch (mod2){
+        case 0: groundAltitude(); break;
+        case 1: meterAltitude(); break;
+        case 2: feetAltitude(); break;
         }
     break;
-    case 1:
-      showFarenheit();
-      switch (mod2)
-        {
-        case 0:
-        if(galtitude<0)
-        {
-          lc.setChar(0,5,'-',0);
-          galtitude=galtitude*-1;
-          minus=1;
-        }
-        var=galtitude*100;
-        ones=var%10;
-        var=var/10;
-        tens=var%10;
-        var=var/10;
-        hundreds=var%10;
-        var=var/10;
-        thousends=var%10;
-        var=var/10;
-        tenthousends=var%10;
-        var=var/10;
-        hundredthousends = var;
-        if(hundredthousends==0)lc.setChar(0,5,' ',0);
-        else lc.setDigit(0,5,(byte)hundredthousends,0);
-        if(tenthousends==0&&hundredthousends==0)lc.setChar(0,6,' ',0);
-        else lc.setDigit(0,6,(byte)tenthousends,0);
-        if(thousends==0&&tenthousends==0&&hundredthousends==0)lc.setChar(0,7,' ',0);
-        else lc.setDigit(0,7,(byte)thousends,0);
-        lc.setDigit(1,0,(byte)hundreds,1);
-        lc.setDigit(1,1,(byte)tens,0);
-        lc.setDigit(1,2,(byte)ones,0);
-        lc.setRow(1,3,B01011110);//wyswietlenie "G"
-        break;
-        
-        case 1:
-        var=haltitude*100;
-        ones=var%10;
-        var=var/10;
-        tens=var%10;
-        var=var/10;
-        hundreds=var%10;
-        var=var/10;
-        thousends=var%10;
-        var=var/10;
-        tenthousends=var%10;
-        var=var/10;
-        hundredthousends = var;
-        if(hundredthousends==0)lc.setChar(0,5,' ',0);
-        else lc.setDigit(0,5,(byte)hundredthousends,0);
-        if(hundredthousends==0&&tenthousends==0)lc.setChar(0,6,' ',0);
-        else lc.setDigit(0,6,(byte)tenthousends,0);
-        if(hundredthousends==0&&tenthousends==0&&thousends==0)lc.setChar(0,7,' ',0);
-        else lc.setDigit(0,7,(byte)thousends,0);
-        lc.setDigit(1,0,(byte)hundreds,1);
-        lc.setDigit(1,1,(byte)tens,0);
-        lc.setDigit(1,2,(byte)ones,0);
-        lc.setChar(1,3,'H',0);//wyswietlenie "H"
-        break;
-        
-        case 2:
-        var=faltitude*100;
-        ones=var%10;
-        var=var/10;
-        tens=var%10;
-        var=var/10;
-        hundreds=var%10;
-        var=var/10;
-        thousends=var%10;
-        var=var/10;
-        tenthousends=var%10;
-        var=var/10;
-        hundredthousends = var;
-        if(hundredthousends==0)lc.setChar(0,5,' ',0);
-        else lc.setDigit(0,5,(byte)hundredthousends,0);
-        if(hundredthousends==0&&tenthousends==0)lc.setChar(0,6,' ',0);
-        else lc.setDigit(0,6,(byte)tenthousends,0);
-        if(hundredthousends==0&&tenthousends==0&&thousends==0)lc.setChar(0,7,' ',0);
-        else lc.setDigit(0,7,(byte)thousends,0);
-        lc.setDigit(1,0,(byte)hundreds,1);
-        lc.setDigit(1,1,(byte)tens,0);
-        lc.setDigit(1,2,(byte)ones,0);
-        lc.setChar(1,3,'F',0);//wyswietlenie "F"
-        break;
+    case 1: farenheitTemp();
+      switch (mod2){
+        case 0: groundAltitude(); break;
+        case 1: meterAltitude(); break;
+        case 2: feetAltitude(); break;
         }
     break;
-    case 2:
-    showVario();
-      switch (mod2)
-        {
-          
-        case 0:
-        if(galtitude<0)
-        {
-          lc.setChar(0,5,'-',0);
-          galtitude=galtitude*-1;
-          minus=1;
-        }
-        var=galtitude*100;
-        ones=var%10;
-        var=var/10;
-        tens=var%10;
-        var=var/10;
-        hundreds=var%10;
-        var=var/10;
-        thousends=var%10;
-        var=var/10;
-        tenthousends=var%10;
-        var=var/10;
-        hundredthousends = var;
-        if(hundredthousends==0)lc.setChar(0,5,' ',0);
-        else lc.setDigit(0,5,(byte)hundredthousends,0);
-        if(tenthousends==0&&hundredthousends==0)lc.setChar(0,6,' ',0);
-        else lc.setDigit(0,6,(byte)tenthousends,0);
-        if(thousends==0&&tenthousends==0&&hundredthousends==0)lc.setChar(0,7,' ',0);
-        else lc.setDigit(0,7,(byte)thousends,0);
-        lc.setDigit(1,0,(byte)hundreds,1);
-        lc.setDigit(1,1,(byte)tens,0);
-        lc.setDigit(1,2,(byte)ones,0);
-        lc.setRow(1,3,B01011110);//wyswietlenie "G"
-        break;
-        
-        case 1:
-        var=haltitude*100;
-        ones=var%10;
-        var=var/10;
-        tens=var%10;
-        var=var/10;
-        hundreds=var%10;
-        var=var/10;
-        thousends=var%10;
-        var=var/10;
-        tenthousends=var%10;
-        var=var/10;
-        hundredthousends = var;
-        if(hundredthousends==0)lc.setChar(0,5,' ',0);
-        else lc.setDigit(0,5,(byte)hundredthousends,0);
-        if(hundredthousends==0&&tenthousends==0)lc.setChar(0,6,' ',0);
-        else lc.setDigit(0,6,(byte)tenthousends,0);
-        if(hundredthousends==0&&tenthousends==0&&thousends==0)lc.setChar(0,7,' ',0);
-        else lc.setDigit(0,7,(byte)thousends,0);
-        lc.setDigit(1,0,(byte)hundreds,1);
-        lc.setDigit(1,1,(byte)tens,0);
-        lc.setDigit(1,2,(byte)ones,0);
-        lc.setChar(1,3,'H',0);//wyswietlenie "H"
-        break;
-        
-        case 2:
-        var=faltitude*100;
-        ones=var%10;
-        var=var/10;
-        tens=var%10;
-        var=var/10;
-        hundreds=var%10;
-        var=var/10;
-        thousends=var%10;
-        var=var/10;
-        tenthousends=var%10;
-        var=var/10;
-        hundredthousends = var;
-        if(hundredthousends==0)lc.setChar(0,5,' ',0);
-        else lc.setDigit(0,5,(byte)hundredthousends,0);
-        if(hundredthousends==0&&tenthousends==0)lc.setChar(0,6,' ',0);
-        else lc.setDigit(0,6,(byte)tenthousends,0);
-        if(hundredthousends==0&&tenthousends==0&&thousends==0)lc.setChar(0,7,' ',0);
-        else lc.setDigit(0,7,(byte)thousends,0);
-        lc.setDigit(1,0,(byte)hundreds,1);
-        lc.setDigit(1,1,(byte)tens,0);
-        lc.setDigit(1,2,(byte)ones,0);
-        lc.setChar(1,3,'F',0);//wyswietlenie "F"
-        break;
+    case 2: feetVario(temperatureArray, temperatureCount, pressureArray, pressureCount);
+      switch (mod2){
+        case 0: groundAltitude(); break;
+        case 1: meterAltitude(); break;
+        case 2: feetAltitude(); break;
         }
     break;
   } 
 }
 
+void groundAltitude() {
+  displayRight(calculateAltitude('G'),'G');
+}
 
-void showLeft(float value, char mode){
+void meterAltitude() {
+  displayRight(calculateAltitude('M'),'H');
+}
+  
+void feetAltitude() {
+  displayRight(calculateAltitude('F'),'F');
+}
+
+void celsiusTemp(){
+  displayLeft(temperature,'C');
+}
+
+void farenheitTemp(){
+  displayLeft(temperature*9/5+32,'F');//Celcius to Farenheit conversion
+}
+
+void feetVario(float temperatureArray[],uint8_t temperatureCount, float pressureArray[], uint8_t pressureCount){
+  //Slight delay to maximize effectiveness of variometer
+  //delay(100);
+  
+  //New temperature and pressure measurements for variometer mode
+  ret = Dps310PressureSensor.getContResults(temperatureArray, temperatureCount, pressureArray, pressureCount);
+  float varioTemperature = temperatureArray[0];
+  float varioPressure = pressureArray[0];
+  
+  //Timestamp calculation for vertical velocity calculations
+  unsigned long timestampDelta = micros()- timestamp + 1;
+  timestamp = timestampDelta;
+
+  //Variometer calculation, 60000000 for time conversion from microseconds to minutes
+  float vario = ((pow((standardPressure*100.0/varioPressure),(1.0/5.257))-1.0)*(varioTemperature+273.15)*3.28084/0.0065 - calculateAltitude('F'))/timestampDelta*60000000;
+
+  Serial.println();
+  Serial.println(vario);
+  float kalmanvario=varioKalman.updateEstimate(vario);
+  if (kalmanvario>0)
+  tone(10,pow(kalmanvario+100,1.2),50);
+  displayLeft(kalmanvario,'V');
+}
+
+float calculateAltitude(char calcUnit){
+  float result = (pow((standardPressure*100.0/pressure),(1.0/5.257))-1.0)*(temperature+273.15)/0.0065;//altitude in meters
+  if(calcUnit=='M')return result;
+  else if(calcUnit=='G')return result == (pow((groundPressure*100.0/pressure),(1.0/5.257))-1.0)*(temperature+273.15)*3.28084/0.0065;//altitude above ground in feet
+  return result*3.28084;//altitude in feet
+}
+
+void displayLeft(float value, char mode){
   //Range check, display error
   int toDecimal = digitsToDecimalPoint(value);
-  if (toDecimal>3) showErrorLeft();
-  
+  if (toDecimal>3) displayErrorLeft();
   else{
     //Sign check, display minus or blank  
     if(value<0){
@@ -463,10 +200,15 @@ void showLeft(float value, char mode){
       value*=-1;
     } else lc.setChar(0,0,' ',0);
   
-    int* digits = valueToDigits(value, toDecimal);
+    int* digits = valueToDigits(value);
     
     //Display data
-    for (int i = 1; i<=3; i++){
+    int i = 1;
+    if(toDecimal==0){
+        lc.setDigit(0,1,(byte)0,1);
+        i++;
+      }
+    for (; i<=3; i++){
       if (i==toDecimal) lc.setDigit(0,i,(byte)digits[i-1],1);
       else lc.setDigit(0,i,(byte)digits[i-1],0);
     }
@@ -474,24 +216,81 @@ void showLeft(float value, char mode){
   
   //Display mode
   switch(mode){
-    case 'C':
-    lc.setRow(0,4,B01001110);//Displaying "C" 
-    break;
-    
-    case 'F':
-    lc.setChar(0,4,'F',0);//Displaying "F"
-    break;
-    
-    case 'V':
-    lc.setRow(0,4,B00111110);//Displaying "V"
-    break;
+    case 'C': lc.setRow(0,4,B01001110); break;//Displaying "C" 
+    case 'F': lc.setChar(0,4,'F',0); break;//Displaying "F"
+    case 'V': lc.setRow(0,4,B00111110); break;//Displaying "V"
   } 
 }
 
-void showErrorLeft(){
+void displayErrorLeft(){
   for (int i=0;i<=3;i++){
     lc.setChar(0,i,'E',0);
   }
+}
+
+void displayRight(float value, char mode){
+  //Range check, display error
+  int toDecimal = digitsToDecimalPoint(value);
+  if (toDecimal>5) displayErrorRight();
+  else{
+    //Sign check, display minus or blank  
+    if(value<0){
+      lc.setChar(0,5,'-',0);
+      value*=-1;
+    } else lc.setChar(0,5,' ',0);
+  
+    int* digits = valueToDigits(value);
+    
+    //Display data
+    int i = 6;
+    if(toDecimal==0){
+        lc.setDigit(0,6,(byte)0,1);
+        i++;
+      }
+    for (; i<=10; i++){
+      if(i<=7){
+        if (i==toDecimal+5) lc.setDigit(0,i,(byte)digits[i-6],1);
+        else lc.setDigit(0,i,(byte)digits[i-6],0);
+      }else{
+      if (i==toDecimal+5) lc.setDigit(1,i-8,(byte)digits[i-6],1);
+      else lc.setDigit(1,i-8,(byte)digits[i-6],0);
+      }
+    }
+  }
+  
+  //Display mode
+  switch(mode){
+    case 'G': lc.setRow(1,3,B01011110); break;//Displaying "G"
+    case 'H': lc.setChar(1,3,'H',0); break;//Displaying "H"
+    case 'F': lc.setChar(1,3,'F',0); break;//Displaying "F"
+  } 
+}
+
+void displayErrorRight(){
+  for (int i=5;i<=7;i++){
+    lc.setChar(0,i,'E',0);
+  }
+  for (int i=0;i<=2;i++){
+    lc.setChar(1,i,'E',0);
+  }
+}
+
+void displayPressure(int pressure){
+    int* digits = valueToDigits(pressure);
+     
+    //Display data
+    for (int i = 5; i<=7; i++) lc.setDigit(0,i,(byte)digits[i-5],0);
+    lc.setDigit(1,0,(byte)digits[3],0);
+    
+    //Displaying HPA
+    lc.setChar(1,1,'H',0);
+    lc.setChar(1,2,'P',0);
+    lc.setChar(1,3,'A',0);
+    
+    //Displays refreshing
+    delay(500);
+    lc.clearDisplay(0);
+    lc.clearDisplay(1);
 }
 
 int digitsToDecimalPoint(float value){
@@ -503,11 +302,12 @@ int digitsToDecimalPoint(float value){
   return counter;
 }
 
-int* valueToDigits(float floatValue, int toDecimal){
+int* valueToDigits(float floatValue){
   //Data prep
-  long int intValue  = floatValue*100;
-  //+2 to size as value is multiplied by 100
-  int sizeOfValue = toDecimal+2;
+  int toDecimal = digitsToDecimalPoint(floatValue);
+  long int intValue  = floatValue*10000;
+  //+2 to size as value is multiplied by 10000
+  int sizeOfValue = toDecimal+4;
   static int digits [10];
 
   //Conversion to digits
@@ -518,55 +318,16 @@ int* valueToDigits(float floatValue, int toDecimal){
   return digits;
 }
 
-void showCelsius(){
-  showLeft(mtemperature,'C');
-}
-
-void showFarenheit(){
-  float farenheitTemp=mtemperature*9/5+32;
-  showLeft(farenheitTemp,'F');
-}
-
-void showVario(){
-  delay(100);
-    uint8_t pressureCount = 20;
-    float xpressure[pressureCount];
-    uint8_t temperatureCount = 20;
-    float xtemperature[temperatureCount];
-    ret = Dps310PressureSensor.getContResults(xtemperature, temperatureCount, xpressure, pressureCount);
-        vtimer=millis()-mtimer;
-        vtemperature = xtemperature[0];
-        vpressure = xpressure[0];
-        valtitude=(pow((pressure*100/vpressure),(1/5.257))-1)*(vtemperature+273.15)/0.0065;//obliczenie wysokości nad poziom odniesienia w metrach
-        valtitude=valtitude*3.28084;//Zamiana jednostek z metrow na stopy
-        
-        vario=(valtitude-faltitude)/vtimer*60000;
-        Serial.println(vario);
-        kalmanvario=varioKalman.updateEstimate(vario);
-        if (kalmanvario>0)
-        tone(10,pow(kalmanvario+100,1.2),50);
-
-        showLeft(kalmanvario,'V');
-}
-
-
-void PUSH()
+void onButtonPress()
 {
-  timer=0;
-  while(digitalRead(3)==LOW)
-  {
-    delayMicroseconds(15000);
-    timer+=15;
-  }
-  if(timer>=2000)
-  {
-  gndpres=mpressure;
-  }
-  else
-   {
+  unsigned long buttonPressTimestamp = micros();
+  while(digitalRead(3)==LOW) delayMicroseconds(10000);
+  
+  //2 second button press sets groundPressure
+  if(micros()-buttonPressTimestamp>=2000000) groundPressure=pressure;
+  else{
     menu++;
-    if (menu>2)
-    {menu=0;}
-   }
+    if(menu>2) menu=0;
+  }
   
 }
